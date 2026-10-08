@@ -1,0 +1,25 @@
+Expected Output Reference — Architecting Residual and Depthwise Blocks
+This file shows the exact console output your completed notebook should
+produce when all three sections are correctly implemented and all cells
+are run in sequence, top to bottom.
+
+Section 1: ResNetBottleneckBlock
+PASS: ResNetBottleneckBlock (same dims) output shape: torch.Size([2, 64, 32, 32])
+PASS: ResNetBottleneckBlock (cross dims, projection) output shape: torch.Size([2, 128, 32, 32])
+
+Section 2: DepthwiseSeparableConv
+Standard 3x3 conv (64->128) params: 73728
+PASS: DepthwiseSeparableConv output shape: torch.Size([2, 128, 32, 32])
+Depthwise conv parameter count alone: 576
+Reduction vs. standard conv: 128.0x
+
+Section 3: EfficientNetV2MBConv
+PASS: EfficientNetV2MBConv (same dims, residual fires) output shape: torch.Size([2, 32, 16, 16])
+PASS: EfficientNetV2MBConv (cross dims, no residual) output shape: torch.Size([2, 64, 16, 16])
+
+ALL SHAPE-ASSERTION CHECKPOINTS PASSED
+
+Note: exact parameter counts and shapes above are deterministic and do
+not depend on random seed, since they come from module structure
+(kernel size, channel counts, groups), not from the randomly
+initialized tensor values themselves.

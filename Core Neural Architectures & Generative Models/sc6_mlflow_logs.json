@@ -1,0 +1,65 @@
+{
+  "experiment_name": "sc6-transformer-finetuning-comparison",
+  "runs": [
+    {
+      "task": "named_entity_recognition",
+      "model": "bert-base-uncased",
+      "strategy": "full_fine_tuning",
+      "peak_vram_gb": 14.2,
+      "validation_f1": 0.912,
+      "trainable_parameters": 109778690,
+      "total_parameters": 109778690,
+      "wall_clock_training_time_min": 47
+    },
+    {
+      "task": "named_entity_recognition",
+      "model": "bert-base-uncased",
+      "strategy": "last_layer_adaptation",
+      "peak_vram_gb": 3.1,
+      "validation_f1": 0.847,
+      "trainable_parameters": 6921,
+      "total_parameters": 109778690,
+      "wall_clock_training_time_min": 12
+    },
+    {
+      "task": "named_entity_recognition",
+      "model": "bert-base-uncased",
+      "strategy": "lora",
+      "peak_vram_gb": 5.8,
+      "validation_f1": 0.898,
+      "trainable_parameters": 294912,
+      "total_parameters": 109778690,
+      "wall_clock_training_time_min": 19
+    },
+    {
+      "task": "medical_image_classification",
+      "model": "google/vit-base-patch16-224",
+      "strategy": "full_fine_tuning",
+      "peak_vram_gb": 15.6,
+      "validation_accuracy": 0.933,
+      "trainable_parameters": 85806346,
+      "total_parameters": 85806346,
+      "wall_clock_training_time_min": 53
+    },
+    {
+      "task": "medical_image_classification",
+      "model": "google/vit-base-patch16-224",
+      "strategy": "last_layer_adaptation",
+      "peak_vram_gb": 3.4,
+      "validation_accuracy": 0.861,
+      "trainable_parameters": 3076,
+      "total_parameters": 85806346,
+      "wall_clock_training_time_min": 14
+    },
+    {
+      "task": "medical_image_classification",
+      "model": "google/vit-base-patch16-224",
+      "strategy": "lora",
+      "peak_vram_gb": 6.3,
+      "validation_accuracy": 0.921,
+      "trainable_parameters": 294912,
+      "total_parameters": 85806346,
+      "wall_clock_training_time_min": 22
+    }
+  ]
+}
