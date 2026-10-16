@@ -1,0 +1,13 @@
+Technical Justification Report: Unified Multi-Domain Encoder
+
+1. Sequence Handling Logic
+
+custom_collate_fn separates each batch into image and text tensors, measures every sequence's true length, and sorts the lengths in descending order. The same sort index is applied to the stacked image tensor, so each product frame stays paired with its own descriptive log; sorting only the text would silently mismatch the modalities. The sorted sequences are padded with pad_sequence to the longest sequence in that batch only, then wrapped with pack_padded_sequence (enforce_sorted=True). Because the LSTM consumes the PackedSequence directly, it never computes time steps on padding, saving compute and keeping padding out of the hidden states. After the LSTM, pad_packed_sequence restores per-step outputs and lengths, which build a key-padding mask so attention also ignores padded positions. Testing confirmed a sample's prediction is unchanged when batched with a much longer sequence.
+
+2. Self-Attention Parameter Scaling
+
+The pretrained ResNet18 is frozen (11.2M parameters set to requires_grad=False; BatchNorm held in eval mode so running statistics cannot drift). Its 512-dimension feature is projected to hidden_dim=128, giving the image token and the LSTM tokens a shared width before the Q, K and V projections. The model uses four heads, so d_k = 128 / 4 = 32, and attention is computed as softmax((Q @ K^T) / sqrt(d_k)) @ V, dividing by sqrt(32), about 5.66. Without this divisor, dot-product variance grows with d_k, pushing softmax toward near one-hot outputs with vanishing gradients; scaling keeps scores near unit variance. Splitting 128 dimensions across four heads keeps the projection cost at 66,048 parameters for the Q, K, V and output layers while letting each head learn different image-text relationships. Only 215,170 parameters train, and the implementation matches PyTorch's built-in scaled_dot_product_attention to within 4e-7.
+
+3. Telemetry Rank Isolation Design
+
+Every rank executes zero_grad, forward, backward and step, but only rank 0 calls mlflow.log_metric. Rank is read from the launcher's RANK environment variable (default 0), and only rank 0 creates the experiment, so workers never race to initialise the shared SQLite store. loss.item() converts the loss to a plain float before logging, so nothing logged references the computation graph. When distributed, an all_reduce averages the loss across ranks; this collective runs outside the shield because placing it inside would deadlock the other ranks. A two-process torchrun test produced exactly one MLflow run with one train_loss row per step and no duplicates.

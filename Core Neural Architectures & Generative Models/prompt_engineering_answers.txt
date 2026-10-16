@@ -1,0 +1,144 @@
+====================================================================
+PROMPT 1 - STRUCTURAL PROMPTS
+====================================================================
+
+--------------------------------------------------------------------
+PART A: CRC PROMPT - VISION TRANSFORMATION PIPELINE (Albumentations)
+--------------------------------------------------------------------
+
+ROLE:
+You are a Staff ML Engineer specializing in PyTorch runtime optimization and production computer-vision data pipelines.
+
+CONTEXT:
+- Data profile: About 12,000 RGB images of machined metal parts captured by an inline inspection camera, labeled into 4 classes: ok, scratch, dent, crack. The dataset is heavily imbalanced: "ok" makes up about 85% of samples and "crack" is under 3%.
+- Image format: 8-bit RGB JPEG files with variable source resolution, loaded with OpenCV as HxWxC uint8 NumPy arrays (converted from BGR to RGB).
+- Tensor shape: Each sample must leave the pipeline as a float32 tensor of shape (3, 224, 224), batched to (B, 3, 224, 224), for an ImageNet-pretrained ResNet-50 backbone.
+- Engineering goal: Train a defect classifier that generalizes on the minority defect classes. Minority-class samples need on-the-fly augmentation at training time so the model sees varied views of rare defects instead of memorizing the few originals.
+- What makes it challenging: Defects are small and localized, so augmentation must add variety without erasing or distorting the defect beyond recognition, and the data loader must keep the GPU fully fed during training.
+
+REQUIREMENTS:
+Generate a training-time augmentation pipeline using albumentations.Compose that applies the following transforms, in this order, each as its own operation:
+- A.Resize(224, 224) to standardize the input size.
+- A.HorizontalFlip(p=0.5).
+- A.VerticalFlip(p=0.5).
+- A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5).
+- A.CoarseDropout for regularization, using Albumentations 2.x argument names: num_holes_range=(1, 8), hole_height_range=(8, 24), hole_width_range=(8, 24), p=0.5. Keep holes small so localized defects are not fully erased.
+- A.Normalize with the ImageNet statistics: mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225), max_pixel_value=255.0. This step is mandatory.
+- ToTensorV2() from albumentations.pytorch as the final transform, converting HWC NumPy arrays to CHW PyTorch tensors.
+Also generate:
+- A separate validation pipeline containing only Resize(224, 224), Normalize (same ImageNet values) and ToTensorV2(), with no random augmentation.
+- A torch.utils.data.Dataset class that reads each image with OpenCV, converts BGR to RGB, applies the pipeline with transform(image=image)["image"], and returns (image_tensor, label).
+- A torch.utils.data.WeightedRandomSampler built from inverse class frequencies so minority-class samples are drawn more often during training.
+- A training DataLoader configured for high-throughput training as specified in the constraints.
+
+CONSTRAINTS:
+- Use Albumentations 2.x and import ToTensorV2 from albumentations.pytorch.
+- Do not use Cutout; use CoarseDropout instead. Cutout was removed in Albumentations v2.x and raises an error on import.
+- Do not use torchvision.transforms for any augmentation, normalization, or tensor-conversion step.
+- Normalize must come immediately before ToTensorV2, and ToTensorV2 must be the last transform in both pipelines.
+- The training DataLoader must set num_workers greater than 0 (num_workers=4), pin_memory=True, and persistent_workers=True.
+- Do not pass shuffle=True to the DataLoader when the WeightedRandomSampler is used; the two options are mutually exclusive.
+- Return only a fenced Python code block. Do not include explanations, comments outside the code, or markdown prose.
+
+
+--------------------------------------------------------------------
+PART B: DEBUGGING PROMPT - VARIABLE-LENGTH SEQUENCES (LSTM)
+--------------------------------------------------------------------
+
+ROLE:
+You are a Staff ML Engineer specializing in PyTorch runtime optimization and recurrent sequence models.
+
+FAULTY PATTERN:
+My PyTorch LSTM text classifier crashes during training whenever a batch contains sequences of different lengths: the default DataLoader collate tries to stack the token tensors and raises "RuntimeError: stack expects each tensor to be equal size". The forward pass embeds token IDs and feeds them straight into nn.LSTM with no padding or packing, so even a manually padded batch would make the LSTM process zero-padded tokens.
+
+Minimal failing code:
+```python
+class SeqClassifier(nn.Module):
+    def __init__(self, vocab_size, embed_dim, hidden_dim, num_classes):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        self.lstm = nn.LSTM(embed_dim, hidden_dim, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x):
+        out, (h_n, c_n) = self.lstm(self.embedding(x))
+        return self.fc(h_n[-1])
+
+# dataset returns (LongTensor of shape [seq_len], int label); seq_len varies per sample
+loader = DataLoader(dataset, batch_size=32, shuffle=True)
+```
+
+REQUIRED FUNCTIONS:
+Synthesize a robust fix that implements both of the following.
+
+1. A custom DataLoader collation function, collate_fn(batch), that:
+   - uses torch.nn.utils.rnn.pad_sequence(sequences, batch_first=True, padding_value=0) to pad every sequence to the length of the longest sequence in the batch;
+   - returns the padded tensor of shape (B, T_max), the original sequence lengths as an int64 CPU tensor, and the labels tensor;
+   - is passed to the DataLoader with collate_fn=collate_fn.
+
+2. A modified forward(self, x, lengths) that runs these four ordered stages:
+   (1) Embed: pass the padded batch through nn.Embedding(vocab_size, embed_dim, padding_idx=0).
+   (2) Pack: call pack_padded_sequence(embedded, lengths.cpu(), batch_first=True, enforce_sorted=False) before the recurrent layer.
+   (3) Propagate: pass the packed sequence through the nn.LSTM.
+   (4) Unpack: call pad_packed_sequence(packed_output, batch_first=True) after the LSTM to recover the padded output tensor and lengths.
+   Use enforce_sorted=False so the solution handles batches that are not pre-sorted by sequence length.
+
+3. An updated training-loop step showing: for x, lengths, y in loader: logits = model(x.to(device), lengths), with lengths left on the CPU.
+
+GUARDRAILS:
+- The generated code must ignore padded elements during the LSTM forward pass: padded positions must never update the hidden state, so no computation is wasted on them and zero-padded tokens cannot contaminate the hidden state.
+- Use the final hidden state h_n[-1] returned by the LSTM on the packed input as the classification feature, because it corresponds to each sequence's true last token. Do not take the last time step of the unpacked output, which would be a padding position for shorter sequences.
+- The lengths tensor passed to pack_padded_sequence must be on the CPU with dtype int64.
+- The output must include a working collation function; a forward-pass modification alone is not acceptable.
+- Return only a fenced Python code block containing the collate function, the corrected model class, and the DataLoader setup. Do not include explanations or markdown prose outside the code.
+
+
+====================================================================
+PROMPT 2 - CODE AUDIT
+====================================================================
+
+AUDIT:
+
+Line A (transforms = T.Compose([T.Resize((224,224)), T.ToTensor()])) relies on the legacy torchvision.transforms (v1) API, which is valid for basic preprocessing but unfit for a production augmentation pipeline because it lacks bounding-box-aware transforms, joint image-mask augmentation, and modern regularization such as CoarseDropout; this chain also applies no augmentation and omits ImageNet mean/std normalization, so a pretrained backbone silently receives inputs on a different scale than it was trained on without any runtime error. Replace it with an albumentations.Compose pipeline (HorizontalFlip, VerticalFlip, RandomBrightnessContrast, CoarseDropout, Normalize with ImageNet mean/std, ending in ToTensorV2) for training, and a Resize, Normalize and ToTensorV2 pipeline for validation. In Line B, num_workers=0 forces all image decoding and transformation to run sequentially on the main process thread, so the GPU sits idle between batches; setting num_workers=4 (tuned to available CPU cores, with persistent_workers=True) lets parallel worker processes prepare upcoming batches while the GPU computes, keeping the data supply continuous. pin_memory=False leaves batches in pageable host memory, so host-to-device copies are not page-locked and cannot run asynchronously alongside GPU computation; setting pin_memory=True and moving tensors with .to(device, non_blocking=True) overlaps the transfer with compute. These two settings compound each other (data arrives late, then transfers slowly), which is the root cause of the low GPU utilization; batch_size=64 is not the bottleneck, since it governs memory use and gradient stability rather than how fast data reaches the GPU.
+
+RECOMMENDED FIX (reference):
+```python
+import os
+import torch
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+from torch.utils.data import DataLoader
+
+# Line A fix: production augmentation pipeline (Albumentations 2.x)
+# Dataset must pass HxWxC uint8 NumPy arrays: transform(image=image)["image"]
+train_transforms = A.Compose([
+    A.Resize(224, 224),
+    A.HorizontalFlip(p=0.5),
+    A.VerticalFlip(p=0.5),
+    A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+    A.CoarseDropout(num_holes_range=(1, 8), hole_height_range=(8, 24),
+                    hole_width_range=(8, 24), p=0.5),
+    A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    ToTensorV2(),
+])
+
+val_transforms = A.Compose([
+    A.Resize(224, 224),
+    A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    ToTensorV2(),
+])
+
+# Line B fix: parallel, page-locked data loading
+loader = DataLoader(
+    dataset,
+    batch_size=64,
+    shuffle=True,
+    num_workers=min(4, os.cpu_count() or 1),
+    pin_memory=True,
+    persistent_workers=True,
+)
+
+for images, labels in loader:
+    images = images.to(device, non_blocking=True)
+    labels = labels.to(device, non_blocking=True)
+```
