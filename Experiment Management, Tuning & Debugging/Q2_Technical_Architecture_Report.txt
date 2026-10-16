@@ -1,0 +1,13 @@
+Technical Architecture Report: Quantized LoRA Fine-Tuning and Azure ML Sweep
+
+1. NF4 Quantization for Memory-Constrained Training
+
+In float16, every base-model parameter costs 2 bytes, so a 7-billion-parameter model needs about 14 GB for its weights alone. On a 16 GB GPU that leaves almost nothing for activations, adapter gradients and optimizer state, which is the root cause of the team's out-of-memory crashes. The pipeline's BitsAndBytesConfig loads the frozen base weights in 4-bit NormalFloat (NF4), cutting weight memory to roughly 3.5 GB. NF4 is preferred over plain 4-bit integers because its quantization levels follow the normal distribution that pretrained weights actually have, so less accuracy is lost. Double quantization also compresses the per-block scaling constants, and the float16 compute dtype upcasts weights only during each matrix multiplication. Because the base model stays frozen, the only trainable parameters are small LoRA adapters (rank 8 to 32) on the q, k, v and o attention projections, keeping gradient and optimizer memory small.
+
+2. Rank-0 Telemetry Shielding
+
+On a multi-node cluster, every process runs an identical copy of train.py. Without a guard, each process writes train_loss to the same MLflow run, producing duplicate or conflicting points at every step, extra tracking traffic and a metric history that no longer describes one training run. This is more than cosmetic: the sweep reads train_loss both to rank trials and to drive early termination, so polluted telemetry leads to wrong decisions. The pipeline wraps mlflow.log_metric in a check that os.environ.get("RANK", "0") equals "0", making the global rank-0 process the single authoritative writer, while the default keeps local runs logging.
+
+3. Bandit Policy Slack Factor and Cloud Cost
+
+The sweep randomly samples learning rates between 1e-5 and 1e-4 and LoRA ranks of 8, 16 or 32, minimizing train_loss. Each logged train_loss counts as one interval. After a five-interval warm-up (delay_evaluation=5), the Bandit policy compares every running trial with the best trial every two intervals. With slack_factor=0.1, a trial more than about 10% worse than the leader is cancelled: if the best loss is 0.50, a trial at 0.56 is stopped. Its GPU node is released immediately for the next configuration instead of finishing a run that cannot win. A tighter slack saves more money but risks killing slow starters; a looser slack is safer but spends more. Trial, concurrency and timeout limits cap the total budget.
