@@ -1,0 +1,14 @@
+TECHNICAL ARCHITECTURE REPORT
+Scaling a 1.5B-Parameter Transformer with DeepSpeed ZeRO-3 on Azure ML (2 nodes x 4 GPUs)
+
+1. WHY ZERO-3 IS NECESSARY
+Mixed-precision Adam training needs about 16 bytes per parameter: 2 for fp16 weights, 2 for fp16 gradients and 12 for the fp32 optimizer state (master weights, momentum and variance). At 1.5 billion parameters that is 22.35 GB of model state before a single activation is stored. That exceeds a 16 GB V100 outright and leaves too little of a 32 GB card for activations. Standard data parallelism replicates this state on every GPU, which is why the baseline crashes. ZeRO-3 partitions parameters, gradients and optimizer states across all 8 ranks, so each GPU owns one-eighth: 2.79 GB. Parameters are all-gathered layer by layer just before use and released afterwards, and gradients are reduce-scattered so each rank keeps only its shard. Offloading optimizer state and idle parameter shards to pinned CPU memory frees further VRAM, at the cost of PCIe traffic. The global batch is 4 per GPU x 1 accumulation step x 8 GPUs = 32.
+
+2. THE ROLE OF ACTIVATION CHECKPOINTING
+Each transformer layer runs inside deepspeed.checkpointing.checkpoint, so only the layer's input is kept. Its internal activations, such as attention outputs and the four-times-wide MLP hidden state, are discarded and recomputed during the backward pass. Activation memory then scales with layer boundaries rather than every intermediate tensor, leaving room for longer sequences or larger micro-batches. The price is one extra forward pass per step, roughly a third more compute. The trade is worthwhile because memory, not arithmetic, is the binding constraint. The verification run confirmed that recomputed gradients match stored-activation gradients exactly, so accuracy is unaffected.
+
+3. THE IMPACT OF NCCL VARIABLES
+ZeRO-3 moves about 1.5 times the data of standard data parallelism, because parameters are gathered in both the forward and backward passes. The interconnect therefore sets throughput.
+- NCCL_IB_DISABLE="0" keeps InfiniBand/RDMA enabled for cross-node all-gathers and reduce-scatters instead of falling back to slower TCP sockets. It pays off only on an InfiniBand-capable VM size.
+- NCCL_P2P_LEVEL="NVL" permits direct GPU-to-GPU transfers only over NVLink, keeping intra-node traffic on the fastest path rather than PCIe.
+- NCCL_DEBUG="INFO" logs the transports NCCL selects, so the first run can confirm InfiniBand and NVLink are actually in use.
